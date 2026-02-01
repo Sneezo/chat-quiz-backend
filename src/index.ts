@@ -19,6 +19,8 @@ type Room = {
     players: Map<string, Player>;
     messages: Message[];
     winnerUserId?: string;
+    nextRoundAt?: number;
+    nextRoundTimer?: NodeJS.Timeout;
 }
 
 const app = express();
@@ -33,6 +35,18 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents>(server, {
 
 const rooms = new Map<string, Room>();
 
+const DEMO_QUESTIONS: Question[] = [
+  { id: "q1", text: "What is 12 + 30?", answer: "42" },
+  { id: "q2", text: "What is the capital of Norway?", answer: "oslo" },
+  { id: "q3", text: "What is 9 * 9?", answer: "81" },
+];
+
+function pickNextQuestion(room: Room): Question {
+  // rotate based on time to keep it simple
+  const idx = Math.floor(Date.now() / 1000) % DEMO_QUESTIONS.length;
+  return DEMO_QUESTIONS[idx];
+}
+
 function getOrCreateRoom(roomId: string): Room {
     const existing = rooms.get(roomId);
     if (existing) return existing;
@@ -40,11 +54,12 @@ function getOrCreateRoom(roomId: string): Room {
     const room: Room = {
         roomId,
         state: "active",
-        question: { id: "q1", text: "What is 2+5?", answer: "7" },
+        question: null,
         players: new Map(),
         messages: [],
         winnerUserId: undefined,
     };
+    room.question = pickNextQuestion(room);
     rooms.set(roomId, room);
     return room;
 }
@@ -58,11 +73,28 @@ function toSnapshot(room: Room) : RoomSnapshot {
         players: Array.from(room.players.values()),
         messages: room.messages,
         winnerUserId: room.winnerUserId,
+        nextRoundAt: room.nextRoundAt,
     };
 }
 
 function normalizeAnswer(s: string) {
     return s.trim().toLowerCase();
+}
+
+function startNextRound(room: Room) {
+    room.state = "active";
+    room.question = pickNextQuestion(room);
+    room.winnerUserId = undefined;
+    room.nextRoundAt = undefined;
+}
+
+function scheduleNextRound(room: Room, delayMs: number) {
+    if (room.nextRoundTimer) clearTimeout(room.nextRoundTimer);
+    room.nextRoundAt = Date.now() + delayMs;
+    room.nextRoundTimer = setTimeout(() => {
+        startNextRound(room);
+        io.to(room.roomId).emit("room:snapshot", toSnapshot(room));
+    }, delayMs);
 }
 
 io.on("connection", (socket) => {
@@ -95,6 +127,8 @@ io.on("connection", (socket) => {
                 room.winnerUserId = userId;
                 room.state = "finished";
                 player.points += 100;
+
+                scheduleNextRound(room, 5000);
             }
 
             const msg: Message = {

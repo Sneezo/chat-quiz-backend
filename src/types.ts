@@ -28,6 +28,7 @@ export type RoomSnapshot = {
     players: Player[];
     messages: Message[];
     winnerUserId?: string;
+    nextRoundAt?: number;
 }
 
 export type ClientToServerEvents = {
