@@ -12,15 +12,21 @@ import type {
     Question,
 } from "./types";
 
+
 type Room = {
     roomId: string;
     state: RoomState;
     question: Question | null;
+
     players: Map<string, Player>;
     messages: Message[];
     winnerUserId?: string;
+
     nextRoundAt?: number;
     nextRoundTimer?: NodeJS.Timeout;
+
+    questions: Question[];
+    questionIndex: number;
 }
 
 const app = express();
@@ -42,9 +48,29 @@ const DEMO_QUESTIONS: Question[] = [
 ];
 
 function pickNextQuestion(room: Room): Question {
-  // rotate based on time to keep it simple
-  const idx = Math.floor(Date.now() / 1000) % DEMO_QUESTIONS.length;
-  return DEMO_QUESTIONS[idx];
+    const i = room.questionIndex % room.questions.length;
+    return room.questions[i];
+}
+
+function advanceQuestion(room: Room){
+    room.questionIndex = (room.questionIndex + 1) % room.questions.length;
+    room.question = pickNextQuestion(room);
+}
+
+function broadCastSnapshot(room: Room) {
+    io.to(room.roomId).emit("room:snapshot", toSnapshot(room));
+}
+
+function addSystemMessage(room: Room, content: string) {
+    const msg: Message = {
+        id: crypto.randomUUID(),
+        userId: "system",
+        username: "System",
+        content,
+        timestamp: Date.now(),
+    };
+    room.messages.push(msg);
+    io.to(room.roomId).emit("chat:message", msg);
 }
 
 function getOrCreateRoom(roomId: string): Room {
@@ -55,11 +81,17 @@ function getOrCreateRoom(roomId: string): Room {
         roomId,
         state: "active",
         question: null,
+
         players: new Map(),
         messages: [],
         winnerUserId: undefined,
+
+        questions: [...DEMO_QUESTIONS],
+        questionIndex: 0,
     };
     room.question = pickNextQuestion(room);
+    addSystemMessage(room, "Round started");
+    addSystemMessage(room, `Question: ${room.question.text}`);
     rooms.set(roomId, room);
     return room;
 }
@@ -83,9 +115,14 @@ function normalizeAnswer(s: string) {
 
 function startNextRound(room: Room) {
     room.state = "active";
-    room.question = pickNextQuestion(room);
     room.winnerUserId = undefined;
     room.nextRoundAt = undefined;
+
+    advanceQuestion(room);
+    addSystemMessage(room, "Next round started");
+    if(room.question) {
+        addSystemMessage(room, `Question: ${room.question.text}`);
+    }
 }
 
 function scheduleNextRound(room: Room, delayMs: number) {
@@ -93,7 +130,7 @@ function scheduleNextRound(room: Room, delayMs: number) {
     room.nextRoundAt = Date.now() + delayMs;
     room.nextRoundTimer = setTimeout(() => {
         startNextRound(room);
-        io.to(room.roomId).emit("room:snapshot", toSnapshot(room));
+        broadCastSnapshot(room);
     }, delayMs);
 }
 
@@ -110,6 +147,7 @@ io.on("connection", (socket) => {
 
         room.players.set(userId, {userId, username, points: 0});
         socket.emit("room:snapshot", toSnapshot(room));
+        broadCastSnapshot(room);
     });
 
     socket.on("chat:send", ({roomId, content}) => {
@@ -128,6 +166,8 @@ io.on("connection", (socket) => {
                 room.state = "finished";
                 player.points += 100;
 
+                addSystemMessage(room, `${player.username} got it first!`);
+                addSystemMessage(room, `Next round in 5 seconds...`);
                 scheduleNextRound(room, 5000);
             }
 
