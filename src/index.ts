@@ -43,9 +43,9 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents>(server, {
 const rooms = new Map<string, Room>();
 
 const DEMO_QUESTIONS: Question[] = [
-  { id: "q1", text: "What is 12 + 30?", answer: "42" },
-  { id: "q2", text: "What is the capital of Norway?", answer: "oslo" },
-  { id: "q3", text: "What is 9 * 9?", answer: "81" },
+  { id: "q1", text: "What is 12 + 30?", answers: ["42","forty-two","forty two","fortytwo"] },
+  { id: "q2", text: "What is the capital of Norway?", answers: ["oslo","kristiania"] },
+  { id: "q3", text: "What is 9 * 9?", answers: ["81","eighty-one","eighty one","eighty one"] },
 ];
 
 /* function pickNextQuestion(room: Room): Question {
@@ -125,8 +125,13 @@ function toSnapshot(room: Room) : RoomSnapshot {
     };
 }
 
-function normalizeAnswer(s: string) {
+function normalize(s: string) {
     return s.trim().toLowerCase();
+}
+
+function isCorrectAnswer(input: string, accepted: string[]){
+    const n = normalize(input);
+    return accepted.some(a => n === normalize(a));
 }
 
 function startNextRound(room: Room) {
@@ -175,7 +180,7 @@ io.on("connection", (socket) => {
         const isCorrect = 
             room.state === "active" &&
             room.question &&
-            normalizeAnswer(content) === normalizeAnswer(room.question.answer);
+            isCorrectAnswer(content, room.question.answers);
 
             if(isCorrect && !room.winnerUserId) {
                 room.winnerUserId = userId;
@@ -201,7 +206,7 @@ io.on("connection", (socket) => {
             io.to(roomId).emit("room:snapshot", toSnapshot(room));
     });
 
-    socket.on("question:submit", ({roomId, text, answer}) => {
+    socket.on("question:submit", ({roomId, text, answers}) => {
         const room = rooms.get(roomId);
         if (!room) {
             socket.emit("room:error", {message: "Room not found"});
@@ -215,7 +220,11 @@ io.on("connection", (socket) => {
         }
 
         const qText = (text ?? "".trim());;
-        const qAnswer = (answer ?? "").trim();
+        const rawAnswers = Array.isArray(answers) ? answers : [];
+        const cleaned = rawAnswers
+            .map((a) => a.trim())
+            .filter(Boolean);
+        const unique = Array.from(new Map(cleaned.map(a => [normalize(a), a])).values());
 
         if (qText.length <2) {
             socket.emit("room:error", {message: "Question text too short."});
@@ -225,20 +234,22 @@ io.on("connection", (socket) => {
             socket.emit("room:error", {message: "Question text too long."});
             return;
         }
-        if (qAnswer.length < 1) {
-            socket.emit("room:error", {message: "Answer required."});
+        if (unique.length <1) {
+            socket.emit("room:error", {message: "At least one answer required."});
             return;
         }
-        if (qAnswer.length > 60) {
-            socket.emit("room:error", {message: "Answer too long."});
+        if (unique.length > 10) {
+            socket.emit("room:error", {message: "Too many answers (max 10)."});
             return;
         }
+
 
         const newQ: Question = {
             id: crypto.randomUUID(),
             text: qText,
-            answer: qAnswer,
+            answers: unique,
         };
+        
         room.userQuestions.push(newQ);
         addSystemMessage(room, `${player.username} submitted a question!`);
         
