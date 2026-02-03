@@ -25,7 +25,8 @@ type Room = {
     nextRoundAt?: number;
     nextRoundTimer?: NodeJS.Timeout;
 
-    questions: Question[];
+    BaseQuestions: Question[];
+    userQuestions: Question[];
     questionIndex: number;
 }
 
@@ -47,14 +48,27 @@ const DEMO_QUESTIONS: Question[] = [
   { id: "q3", text: "What is 9 * 9?", answer: "81" },
 ];
 
-function pickNextQuestion(room: Room): Question {
+/* function pickNextQuestion(room: Room): Question {
     const i = room.questionIndex % room.questions.length;
     return room.questions[i];
+} */
+
+function allQuestions(room: Room): Question[] {
+    return room.userQuestions.length > 0
+        ? [...room.BaseQuestions, ...room.userQuestions]
+        : room.BaseQuestions;
+}
+
+function pickCurrentQuestion(room: Room):Question {
+    const qs = allQuestions(room);
+    const i = room.questionIndex % qs.length;
+    return qs[i];
 }
 
 function advanceQuestion(room: Room){
-    room.questionIndex = (room.questionIndex + 1) % room.questions.length;
-    room.question = pickNextQuestion(room);
+    const qs = allQuestions(room);
+    room.questionIndex = (room.questionIndex + 1) % qs.length;
+    room.question = pickCurrentQuestion(room);
 }
 
 function broadCastSnapshot(room: Room) {
@@ -86,10 +100,11 @@ function getOrCreateRoom(roomId: string): Room {
         messages: [],
         winnerUserId: undefined,
 
-        questions: [...DEMO_QUESTIONS],
+        BaseQuestions: [...DEMO_QUESTIONS],
+        userQuestions: [],
         questionIndex: 0,
     };
-    room.question = pickNextQuestion(room);
+    room.question = pickCurrentQuestion(room);
     addSystemMessage(room, "Round started");
     addSystemMessage(room, `Question: ${room.question.text}`);
     rooms.set(roomId, room);
@@ -106,6 +121,7 @@ function toSnapshot(room: Room) : RoomSnapshot {
         messages: room.messages,
         winnerUserId: room.winnerUserId,
         nextRoundAt: room.nextRoundAt,
+        queuedQuestionsCount: allQuestions(room).length,
     };
 }
 
@@ -184,6 +200,51 @@ io.on("connection", (socket) => {
             io.to(roomId).emit("chat:message", msg);
             io.to(roomId).emit("room:snapshot", toSnapshot(room));
     });
+
+    socket.on("question:submit", ({roomId, text, answer}) => {
+        const room = rooms.get(roomId);
+        if (!room) {
+            socket.emit("room:error", {message: "Room not found"});
+            return;
+        }
+
+        const player = room.players.get(socket.id);
+        if (!player) {
+            socket.emit("room:error", {message: "Player not in room"});
+            return;
+        }
+
+        const qText = (text ?? "".trim());;
+        const qAnswer = (answer ?? "").trim();
+
+        if (qText.length <2) {
+            socket.emit("room:error", {message: "Question text too short."});
+            return;
+        }
+        if (qText.length > 140) {
+            socket.emit("room:error", {message: "Question text too long."});
+            return;
+        }
+        if (qAnswer.length < 1) {
+            socket.emit("room:error", {message: "Answer required."});
+            return;
+        }
+        if (qAnswer.length > 60) {
+            socket.emit("room:error", {message: "Answer too long."});
+            return;
+        }
+
+        const newQ: Question = {
+            id: crypto.randomUUID(),
+            text: qText,
+            answer: qAnswer,
+        };
+        room.userQuestions.push(newQ);
+        addSystemMessage(room, `${player.username} submitted a question!`);
+        
+        io.to(roomId).emit("question:queued", { roomId, count: room.userQuestions.length });
+        broadCastSnapshot(room);
+    })
 
     socket.on("disconnect", () => {
         for (const room of rooms.values()) {
